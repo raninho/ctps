@@ -7,7 +7,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -18,25 +17,44 @@ import (
 )
 
 type NewCTPSResponse struct {
-	BlockID string `json:"blockId"`
+	CTPSId string `json:"ctpsId"`
 }
 
 func (h *Handler) HandleNewCTPS(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctpsRequest := new(ChangeCTPSRequest)
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&ctpsRequest)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	publicKey := h.PrivateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
 		http.Error(w, "error casting public key to ECDSA", http.StatusInternalServerError)
+		return
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
-	nonce, err := h.EthClient.PendingNonceAt(r.Context(), fromAddress)
+	nonce, err := h.EthClient.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	gasPrice, err := h.EthClient.SuggestGasPrice(context.Background())
+	gasPrice, err := h.EthClient.SuggestGasPrice(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	auth := bind.NewKeyedTransactor(h.PrivateKey)
@@ -45,14 +63,41 @@ func (h *Handler) HandleNewCTPS(w http.ResponseWriter, r *http.Request) {
 	auth.GasLimit = uint64(6721975) // in units
 	auth.GasPrice = gasPrice
 
-	address, tx, _, err := ctps.DeployCtps(auth, h.EthClient)
+	address, tx, instance, err := ctps.DeployCtps(auth, h.EthClient)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	log.Println("transaction:", tx.Hash().Hex())
+
+	log.Println("address:", address.Hash().Hex())
+	log.Println("tx:", tx.Hash().Hex())
+
+	nonce, err = h.EthClient.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	gasPrice, err = h.EthClient.SuggestGasPrice(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	auth = bind.NewKeyedTransactor(h.PrivateKey)
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Value = big.NewInt(0)      // in wei
+	auth.GasLimit = uint64(6721975) // in units
+	auth.GasPrice = gasPrice
+
+	_, err = instance.SetProfissao(auth, ctpsRequest.DataRegistro, ctpsRequest.Profissao, ctpsRequest.Numero, ctpsRequest.Livro, ctpsRequest.Folha, ctpsRequest.DRT)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	response := new(NewCTPSResponse)
-	response.BlockID = address.Hex()
+	response.CTPSId = address.Hash().Hex()
 
 	json.NewEncoder(w).Encode(response)
 }
@@ -66,6 +111,11 @@ type ChangeCTPSRequest struct {
 	DRT          string `json:"drt"`
 }
 
+type ChangeCTPSResponse struct {
+	Message string `json:"message"`
+	TxId string `json:"txId"`
+}
+
 func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ctpsId := vars["ctpsId"]
@@ -73,6 +123,7 @@ func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	ctpsRequest := new(ChangeCTPSRequest)
@@ -80,12 +131,14 @@ func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 	err = decoder.Decode(&ctpsRequest)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	publicKey := h.PrivateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
 		http.Error(w, "error casting public key to ECDSA", http.StatusInternalServerError)
+		return
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
@@ -95,16 +148,19 @@ func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 	instance, err := ctps.NewCtps(address, h.EthClient)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	nonce, err := h.EthClient.PendingNonceAt(r.Context(), fromAddress)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	gasPrice, err := h.EthClient.SuggestGasPrice(context.Background())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	auth := bind.NewKeyedTransactor(h.PrivateKey)
@@ -115,13 +171,19 @@ func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := instance.SetProfissao(auth, ctpsRequest.DataRegistro, ctpsRequest.Profissao, ctpsRequest.Numero, ctpsRequest.Livro, ctpsRequest.Folha, ctpsRequest.DRT)
 	if err != nil {
-		log.Fatal(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	log.Println("transaction:", tx.Hash().Hex())
+
+	response := new(ChangeCTPSResponse)
+	response.Message = "Changed with success"
+	response.TxId = tx.Hash().Hex()
+
+	json.NewEncoder(w).Encode(response)
 }
 
 type ViewCTPS struct {
-	ReceivedAt time.Time `json:"receivedAt"`
+	ReceivedAt string `json:"receivedAt"`
 }
 
 func (h *Handler) HandleViewCTPS(w http.ResponseWriter, r *http.Request) {
@@ -130,13 +192,15 @@ func (h *Handler) HandleViewCTPS(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	idCTPS := vars["ctpsId"]
 
-	block, err := h.EthClient.BlockByHash(ctx, common.HexToHash(idCTPS))
+	tx, _, err := h.EthClient.TransactionByHash(ctx, common.HexToHash(idCTPS))
 	if err != nil {
+		log.Println("Error BlockByHash", idCTPS)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	response := new(ViewCTPS)
-	response.ReceivedAt = block.ReceivedAt
+	response.ReceivedAt = string(tx.Data())
 
 	json.NewEncoder(w).Encode(response)
 }
@@ -158,6 +222,7 @@ func (h *Handler) HandleViewAllTransactions(w http.ResponseWriter, r *http.Reque
 	block, err := h.EthClient.BlockByHash(ctx, common.HexToHash(idCTPS))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	transactions := block.Transactions()
 
@@ -180,12 +245,14 @@ func (h *Handler) HandleViewTransaction(w http.ResponseWriter, r *http.Request) 
 	block, err := h.EthClient.BlockByHash(ctx, common.HexToHash(transactionId))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	transaction := block.Transaction(common.HexToHash(transactionId))
 
 	response, err := transaction.MarshalJSON()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	json.NewEncoder(w).Encode(response)
