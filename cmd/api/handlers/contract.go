@@ -13,8 +13,17 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/mux"
 
-	ctps "github.com/raninho/ctps/internal/store"
+	"github.com/raninho/ctps/internal/ctps"
 )
+
+type NewCTPSRequest struct {
+	DataRegistro string `json:"data_registro"`
+	Profissao    string `json:"profissao"`
+	Numero       string `json:"numero"`
+	Livro        string `json:"livro"`
+	Folha        string `json:"folha"`
+	DRT          string `json:"drt"`
+}
 
 type NewCTPSResponse struct {
 	CTPSId string `json:"ctpsId"`
@@ -29,7 +38,7 @@ func (h *Handler) HandleNewCTPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctpsRequest := new(ChangeCTPSRequest)
+	ctpsRequest := new(NewCTPSRequest)
 	decoder := json.NewDecoder(r.Body)
 	err = decoder.Decode(&ctpsRequest)
 	if err != nil {
@@ -69,8 +78,24 @@ func (h *Handler) HandleNewCTPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("address:", address.Hash().Hex())
-	log.Println("tx:", tx.Hash().Hex())
+	newCtps := new(ctps.CTPSBlock)
+	newCtps.CTPSId = address.Hash().Hex()
+
+	err = ctps.InsertCTPS(h.DB, newCtps)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	ctpsTx := new(ctps.CTPSTransaction)
+	ctpsTx.CTPSId = newCtps.CTPSId
+	ctpsTx.TransactionId = tx.Hash().Hex()
+
+	err = ctps.InsertCTPSTransaction(h.DB, ctpsTx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	nonce, err = h.EthClient.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
@@ -90,14 +115,24 @@ func (h *Handler) HandleNewCTPS(w http.ResponseWriter, r *http.Request) {
 	auth.GasLimit = uint64(6721975) // in units
 	auth.GasPrice = gasPrice
 
-	_, err = instance.SetProfissao(auth, ctpsRequest.DataRegistro, ctpsRequest.Profissao, ctpsRequest.Numero, ctpsRequest.Livro, ctpsRequest.Folha, ctpsRequest.DRT)
+	tx2, err := instance.SetProfissao(auth, ctpsRequest.DataRegistro, ctpsRequest.Profissao, ctpsRequest.Numero, ctpsRequest.Livro, ctpsRequest.Folha, ctpsRequest.DRT)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	ctpsTx2 := new(ctps.CTPSTransaction)
+	ctpsTx2.CTPSId = newCtps.CTPSId
+	ctpsTx2.TransactionId = tx2.Hash().Hex()
+
+	err = ctps.InsertCTPSTransaction(h.DB, ctpsTx2)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	response := new(NewCTPSResponse)
-	response.CTPSId = address.Hash().Hex()
+	response.CTPSId = newCtps.CTPSId
 
 	json.NewEncoder(w).Encode(response)
 }
@@ -175,6 +210,16 @@ func (h *Handler) HandleChangeCTPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctpsTx := new(ctps.CTPSTransaction)
+	ctpsTx.CTPSId = ctpsId
+	ctpsTx.TransactionId = tx.Hash().Hex()
+
+	err = ctps.InsertCTPSTransaction(h.DB, ctpsTx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	response := new(ChangeCTPSResponse)
 	response.Message = "Changed with success"
 	response.TxId = tx.Hash().Hex()
@@ -190,11 +235,21 @@ func (h *Handler) HandleViewCTPS(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	vars := mux.Vars(r)
-	idCTPS := vars["ctpsId"]
+	ctpsId := vars["ctpsId"]
 
-	tx, _, err := h.EthClient.TransactionByHash(ctx, common.HexToHash(idCTPS))
+	transaction, err := ctps.GetLastCTPSTransactionByCTPSID(h.DB, ctpsId)
 	if err != nil {
-		log.Println("Error BlockByHash", idCTPS)
+		log.Println("Error GetLastCTPSTransactionByCTPSID", ctpsId, err.Error())
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	log.Println(transaction.TransactionId)
+	log.Println(transaction.CTPSId)
+
+	tx, _, err := h.EthClient.TransactionByHash(ctx, common.HexToHash(transaction.TransactionId))
+	if err != nil {
+		log.Println("Error BlockByHash", transaction.TransactionId, err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
